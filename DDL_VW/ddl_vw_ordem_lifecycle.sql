@@ -28,131 +28,148 @@ CREATE OR REPLACE VIEW `delivery_zone.vw_ordem_lifecycle` (
 OPTIONS(
     description="Uma visão que representa todo o ciclo de vida das ordens. \nDomínio de Dado: Eficiência Operacional - eop \nPeríodo de retenção: a definir \nClassificação da Informação: a definir \nGrupo de Acesso: \nRelacionamento com termo do Glossário: \nRelacionamento com indicadores do Glossário:",
     labels=[("eficiencia_operacional", "eop"), ("eficiencia_operacional_eop", "dominio_dado")]
-)AS SELECT DISTINCT
-        a.ID_Access,
-        IFNULL(ba.ATTR4, NULL)              AS UF,
-        IFNULL(ba.ATTR2, NULL)              AS Municipio,
-        IFNULL(ba.ATTR9, NULL)             AS CNL,
-        IFNULL(cn.COD_IBGE, NULL)          AS COD_IBGE, -- RN2 OK
-        a.IN_TENANT,
-        CONCAT(a.ID_Access,a.ID_Reserva)              AS SK,
-        a.ID_Reserva,
-        cpe.IN_Char_Cpe_SN,
-        cpe.IN_Char_Cpe_Model,
-        cpe.IN_Char_Cpe_Vendor,
-        loc.LATITUDE,
-        loc.LONGITUDE,
-        a.TP_Ordem                                    AS ORD_APROV,
-        b.TP_Ordem                                    AS ORD_EMP,
-        e.TP_Ordem                                    AS ORD_DESEMP, --RN3 OK
-        c.TP_Ordem                                    AS ORD_ATIV,
-        c.Ordem_Origem AS ORD_ORIGEM,
-        CASE
-            WHEN d.TS_Ult_Atualizacao < a.TS_Ult_Atualizacao THEN NULL
-            WHEN d.TP_Ordem = "DESCONEXÃO" AND c.TP_Ordem = "ATIVAÇÃO" THEN "CHURN"
-            WHEN d.TP_Ordem = "DESCONEXÃO" AND c.TP_Ordem IS NULL THEN "QUEBRA"
-            ELSE d.TP_Ordem
-        END                                           AS ORD_DESC,
-        MAX( TIMESTAMP_TRUNC(reserva.UPDATED_AT, SECOND)   )   AS TS_UPD_RESERVA,
-        MAX( TIMESTAMP_TRUNC(a.TS_Ult_Atualizacao, SECOND) )   AS TS_UPD_APROV,
-        MAX( TIMESTAMP_TRUNC(b.TS_Ult_Atualizacao, SECOND) )   AS TS_UPD_EMP,
-        MAX( TIMESTAMP_TRUNC(e.TS_Ult_Atualizacao, SECOND) )   AS TS_UPD_DESEMP, --RN3 OK
-        MAX( TIMESTAMP_TRUNC(c.TS_Ult_Atualizacao, SECOND) )   AS TS_UPD_ATIV,
-        ARRAY_AGG(
-                    CASE
-                        WHEN d.TS_Ult_Atualizacao < a.TS_Ult_Atualizacao 
-                        THEN NULL 
-                        ELSE TIMESTAMP_TRUNC(d.TS_Ult_Atualizacao, SECOND) 
-                    END 
-                    ORDER BY a.TS_Ult_Atualizacao DESC LIMIT 1
-        )[SAFE_OFFSET(0)] AS TS_UPD_DESC,
-    FROM `delivery_zone.vw_ordem_aprovisionamento`       AS a
-    LEFT JOIN `delivery_zone.vw_ordem_emparelhamento`    AS b
-        ON  a.ID_Access = b.ID_Access
-        AND a.ID_Reserva = b.ID_Reserva
-        AND a.IN_TENANT = b.IN_TENANT
-    LEFT JOIN (
-                SELECT *
-                FROM `gold_zone.tb_eop_ordem_fase` 
-                WHERE TP_Ordem = 'ATIVAÇÃO' 
-                    AND IN_Estado_Ordem = 'COMPLETED'
-    ) AS c
-        ON  a.ID_Access = c.ID_Access
-        AND a.ID_Reserva = c.ID_Reserva
-        AND a.IN_TENANT = c.IN_TENANT
-    LEFT JOIN (
-                SELECT * 
-                FROM `gold_zone.tb_eop_ordem_fase` 
-                WHERE TP_Ordem = 'DESCONEXÃO'
-    ) AS d
-        ON  a.ID_Access = d.ID_Access
-        AND a.ID_Reserva = d.ID_Reserva
-        AND a.IN_TENANT = d.IN_TENANT
-    LEFT JOIN (
-                SELECT * 
-                FROM `gold_zone.tb_eop_ordem_fase` 
-                WHERE TP_Ordem = 'DESEMPARELHAMENTO'
-    ) AS e
-        ON  a.ID_Access = e.ID_Access
-        AND a.ID_Reserva = e.ID_Reserva
-        AND a.IN_TENANT = e.IN_TENANT
-    LEFT JOIN `delivery_zone.vw_reserve`                              AS reserva
-        ON CAST(reserva.ID AS STRING) = a.ID_Reserva
-    LEFT JOIN `delivery_zone.vw_address`                              AS addr
-        ON addr.ID = reserva.ID_ADDRESS
-    LEFT JOIN `delivery_zone.vw_base_address`                         AS ba
-        ON ba.ID = addr.ID_BASE_ADDRESS
-    LEFT JOIN `silver_zone.manual_dados_abertos_mun_tratado_protheus` AS cn
-        ON CAST(cn.COD_CNL AS INT64) = CAST(ba.ATTR9 AS INT64)
-    LEFT JOIN `delivery_zone.vw_location_address_assoc`               AS assoc
-        ON addr.ID = assoc.ID_ADDRESS
-    LEFT JOIN `delivery_zone.vw_location`                             AS loc
-        ON assoc.ID_LOCATION = loc.ID
-    LEFT JOIN (
-        -- Apenas é possivel identificar a CPE quando
-        -- IN_Action = modify
-        -- IN_Char_Cpe_Action = add
-        -- Para outros casos ira retornar Null
-        SELECT
-            ID_Access,
-            IN_Service_Provider,
-            IN_Char_Cpe_SN,
-            IN_Char_Cpe_Model,
-            IN_Char_Cpe_Vendor,
-            TS_Start_Time,
-            ROW_NUMBER() OVER (PARTITION BY ID_Access, IN_Service_Provider ORDER BY TS_Start_Time DESC ) AS RK
-        FROM `delivery_zone.vw_ordem_origem`
-        WHERE IN_Action = 'modify'
-            AND IN_Char_Cpe_Action = 'add'
-            --AND IN_Char_Cpe_SN IS NOT NULL
-            --AND IN_Char_Cpe_Model IS NOT NULL
-            --AND IN_Char_Cpe_Vendor IS NOT NULL
-        ORDER BY
-            ID_Access,
-            IN_Service_Provider
-    ) AS cpe
-        ON  a.ID_Access = cpe.ID_Access
-        AND a.IN_TENANT = cpe.IN_Service_Provider
-        AND cpe.RK = 1
-    WHERE a.IN_Estado_Ordem = 'COMPLETED'
-    GROUP BY
-        a.ID_Access,
-        ba.ATTR4,
-        ba.ATTR2,
-        ba.ATTR9,
-        cn.COD_IBGE,
-        a.IN_TENANT,
-        CONCAT(a.ID_Access,a.ID_Reserva),
-        a.ID_Reserva,
-        cpe.IN_Char_Cpe_SN,
-        cpe.IN_Char_Cpe_Model,
-        cpe.IN_Char_Cpe_Vendor,
-        loc.LATITUDE,
-        loc.LONGITUDE,
-        a.TP_Ordem,
-        b.TP_Ordem,
-        e.TP_Ordem,
-        c.TP_Ordem,
-        c.Ordem_Origem,
-        ORD_DESC
-    ORDER BY SK DESC
+)AS 
+WITH tb_ordem_portal as (
+SELECT 
+ID_Access,
+ID_Reserva,
+ID_Correlation,
+TP_Ordem,
+Ordem_Origem,
+IN_TENANT
+FROM `gold_zone.tb_eop_ordem_fase` 
+)
+
+SELECT 
+DISTINCT
+a.ID_Access,
+IFNULL(ba.ATTR4, NULL)              AS UF,
+IFNULL(ba.ATTR2, NULL)              AS Municipio,
+IFNULL(ba.ATTR9, NULL)             AS CNL,
+IFNULL(cn.COD_IBGE, NULL)          AS COD_IBGE, -- RN2 OK
+a.IN_TENANT,
+CONCAT(a.ID_Access,a.ID_Reserva)              AS SK,
+a.ID_Reserva,
+cpe.IN_Char_Cpe_SN,
+cpe.IN_Char_Cpe_Model,
+cpe.IN_Char_Cpe_Vendor,
+loc.LATITUDE,
+loc.LONGITUDE,
+a.TP_Ordem                                    AS ORD_APROV,
+b.TP_Ordem                                    AS ORD_EMP,
+e.TP_Ordem                                    AS ORD_DESEMP, --RN3 OK
+c.TP_Ordem                                    AS ORD_ATIV,
+ord_p.Ordem_Origem AS ORD_ORIGEM,
+CASE
+    WHEN d.TS_Ult_Atualizacao < a.TS_Ult_Atualizacao THEN NULL
+    WHEN d.TP_Ordem = "DESCONEXÃO" AND c.TP_Ordem = "ATIVAÇÃO" THEN "CHURN"
+    WHEN d.TP_Ordem = "DESCONEXÃO" AND c.TP_Ordem IS NULL THEN "QUEBRA"
+    ELSE d.TP_Ordem
+END                                           AS ORD_DESC,
+MAX( TIMESTAMP_TRUNC(reserva.UPDATED_AT, SECOND)   )   AS TS_UPD_RESERVA,
+MAX( TIMESTAMP_TRUNC(a.TS_Ult_Atualizacao, SECOND) )   AS TS_UPD_APROV,
+MAX( TIMESTAMP_TRUNC(b.TS_Ult_Atualizacao, SECOND) )   AS TS_UPD_EMP,
+MAX( TIMESTAMP_TRUNC(e.TS_Ult_Atualizacao, SECOND) )   AS TS_UPD_DESEMP, --RN3 OK
+MAX( TIMESTAMP_TRUNC(c.TS_Ult_Atualizacao, SECOND) )   AS TS_UPD_ATIV,
+ARRAY_AGG(
+            CASE
+                WHEN d.TS_Ult_Atualizacao < a.TS_Ult_Atualizacao 
+                THEN NULL 
+                ELSE TIMESTAMP_TRUNC(d.TS_Ult_Atualizacao, SECOND) 
+            END 
+            ORDER BY a.TS_Ult_Atualizacao DESC LIMIT 1
+)[SAFE_OFFSET(0)] AS TS_UPD_DESC,
+FROM `delivery_zone.vw_ordem_aprovisionamento`       AS a
+LEFT JOIN tb_ordem_portal ord_p 
+ON  a.ID_Access = ord_p.ID_Access
+ AND a.ID_Reserva = ord_p.ID_Reserva 
+ AND a.IN_TENANT = ord_p.IN_TENANT
+LEFT JOIN `delivery_zone.vw_ordem_emparelhamento`    AS b
+ON  a.ID_Access = b.ID_Access
+AND a.ID_Reserva = b.ID_Reserva
+AND a.IN_TENANT = b.IN_TENANT
+LEFT JOIN (
+        SELECT *
+        FROM `gold_zone.tb_eop_ordem_fase` 
+        WHERE TP_Ordem = 'ATIVAÇÃO' 
+            AND IN_Estado_Ordem = 'COMPLETED'
+) AS c
+ON  a.ID_Access = c.ID_Access
+AND a.ID_Reserva = c.ID_Reserva
+AND a.IN_TENANT = c.IN_TENANT
+LEFT JOIN (
+        SELECT * 
+        FROM `gold_zone.tb_eop_ordem_fase` 
+        WHERE TP_Ordem = 'DESCONEXÃO'
+) AS d
+ON  a.ID_Access = d.ID_Access
+AND a.ID_Reserva = d.ID_Reserva
+AND a.IN_TENANT = d.IN_TENANT
+LEFT JOIN (
+        SELECT * 
+        FROM `gold_zone.tb_eop_ordem_fase` 
+        WHERE TP_Ordem = 'DESEMPARELHAMENTO'
+) AS e
+ON  a.ID_Access = e.ID_Access
+AND a.ID_Reserva = e.ID_Reserva
+AND a.IN_TENANT = e.IN_TENANT
+LEFT JOIN `delivery_zone.vw_reserve`                              AS reserva
+ON CAST(reserva.ID AS STRING) = a.ID_Reserva
+LEFT JOIN `delivery_zone.vw_address`                              AS addr
+ON addr.ID = reserva.ID_ADDRESS
+LEFT JOIN `delivery_zone.vw_base_address`                         AS ba
+ON ba.ID = addr.ID_BASE_ADDRESS
+LEFT JOIN `silver_zone.manual_dados_abertos_mun_tratado_protheus` AS cn
+ON CAST(cn.COD_CNL AS INT64) = CAST(ba.ATTR9 AS INT64)
+LEFT JOIN `delivery_zone.vw_location_address_assoc`               AS assoc
+ON addr.ID = assoc.ID_ADDRESS
+LEFT JOIN `delivery_zone.vw_location`                             AS loc
+ON assoc.ID_LOCATION = loc.ID
+LEFT JOIN (
+-- Apenas é possivel identificar a CPE quando
+-- IN_Action = modify
+-- IN_Char_Cpe_Action = add
+-- Para outros casos ira retornar Null
+SELECT
+    ID_Access,
+    IN_Service_Provider,
+    IN_Char_Cpe_SN,
+    IN_Char_Cpe_Model,
+    IN_Char_Cpe_Vendor,
+    TS_Start_Time,
+    ROW_NUMBER() OVER (PARTITION BY ID_Access, IN_Service_Provider ORDER BY TS_Start_Time DESC ) AS RK
+FROM `delivery_zone.vw_ordem_origem`
+WHERE IN_Action = 'modify'
+    AND IN_Char_Cpe_Action = 'add'
+    --AND IN_Char_Cpe_SN IS NOT NULL
+    --AND IN_Char_Cpe_Model IS NOT NULL
+    --AND IN_Char_Cpe_Vendor IS NOT NULL
+ORDER BY
+    ID_Access,
+    IN_Service_Provider
+) AS cpe
+ON  a.ID_Access = cpe.ID_Access
+AND a.IN_TENANT = cpe.IN_Service_Provider
+AND cpe.RK = 1
+WHERE a.IN_Estado_Ordem = 'COMPLETED'
+GROUP BY
+a.ID_Access,
+ba.ATTR4,
+ba.ATTR2,
+ba.ATTR9,
+cn.COD_IBGE,
+a.IN_TENANT,
+CONCAT(a.ID_Access,a.ID_Reserva),
+a.ID_Reserva,
+cpe.IN_Char_Cpe_SN,
+cpe.IN_Char_Cpe_Model,
+cpe.IN_Char_Cpe_Vendor,
+loc.LATITUDE,
+loc.LONGITUDE,
+a.TP_Ordem,
+b.TP_Ordem,
+e.TP_Ordem,
+c.TP_Ordem,
+ord_p.Ordem_Origem,
+ORD_DESC
+ORDER BY SK DESC
