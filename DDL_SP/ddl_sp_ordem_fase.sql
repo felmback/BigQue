@@ -117,7 +117,7 @@ BEGIN
       ,IN_Estado_Ordem
       ,IN_TENANT
       ,TP_Ordem
-      ,CASE WHEN UPPER(ID_Correlation) LIKE '%PORTALFIBRASIL%' THEN 'PORTAL'
+      ,CASE WHEN (UPPER(ID_Correlation) LIKE '%PORTALFIBRASIL%' AND TP_Ordem = 'APROVISIONAMENTO') THEN 'PORTAL'
            ELSE 'API' END AS Ordem_Origem
       ,TS_Inicio_Ordem
       ,TS_Fim_Ordem
